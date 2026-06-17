@@ -1,119 +1,106 @@
-require('dotenv').config();
+require('dotenv').config({ quiet: true });
 
-const PING_INTERVAL_MS = 1000 * 60 * 60 * 24; // 24 hours
+const { loadProjects, pingTable, pingAuthAdmin } = require('./ping');
 
-const PING_ENDPOINTS = [
-  { path: '/auth/v1/health', label: 'auth health' },
-  { path: '/rest/v1/', label: 'rest api' },
-];
+const DEFAULT_PING_INTERVAL_DAYS = 3;
+const RUN_ONCE = process.argv.includes('--once');
 
-function normalizeUrl(url) {
-  return url.replace(/\/+$/, '');
-}
-
-function resolveApiKey(project, index) {
-  const apiKey =
-    project.anonKey ||
-    project.anon_key ||
-    project.key ||
-    project.serviceRoleKey ||
-    project.service_role_key;
-
-  if (!apiKey) {
-    throw new Error(
-      `Project at index ${index} is missing an API key ("anonKey" recommended, or "key"/"serviceRoleKey")`
-    );
+function parsePingIntervalDays() {
+  const raw = process.env.PING_INTERVAL_DAYS;
+  if (!raw) {
+    return DEFAULT_PING_INTERVAL_DAYS;
   }
 
-  return apiKey;
-}
-
-function loadProjects() {
-  if (process.env.SUPABASE_PROJECTS) {
-    let projects;
-    try {
-      projects = JSON.parse(process.env.SUPABASE_PROJECTS);
-    } catch {
-      throw new Error('SUPABASE_PROJECTS must be valid JSON');
-    }
-
-    if (!Array.isArray(projects) || projects.length === 0) {
-      throw new Error('SUPABASE_PROJECTS must be a non-empty JSON array');
-    }
-
-    return projects.map((project, index) => {
-      const url = project.url;
-
-      if (!url) {
-        throw new Error(`Project at index ${index} is missing "url"`);
-      }
-
-      return {
-        name: project.name || `project-${index + 1}`,
-        url: normalizeUrl(url),
-        apiKey: resolveApiKey(project, index),
-      };
-    });
+  const days = Number(raw);
+  if (!Number.isFinite(days) || days <= 0) {
+    throw new Error('PING_INTERVAL_DAYS must be a positive number');
   }
 
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const apiKey =
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-    process.env.SUPABASE_ANON_KEY ||
-    process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (url && apiKey) {
-    return [
-      {
-        name: process.env.SUPABASE_PROJECT_NAME || 'default',
-        url: normalizeUrl(url),
-        apiKey,
-      },
-    ];
-  }
-
-  throw new Error(
-    'No Supabase projects configured. Set SUPABASE_PROJECTS or NEXT_PUBLIC_SUPABASE_URL with an API key'
-  );
+  return days;
 }
 
+const PING_INTERVAL_DAYS = parsePingIntervalDays();
+const PING_INTERVAL_MS = PING_INTERVAL_DAYS * 24 * 60 * 60 * 1000;
 const projects = loadProjects();
 
-async function pingEndpoint(project, endpoint) {
-  const response = await fetch(`${project.url}${endpoint.path}`, {
-    headers: {
-      apikey: project.apiKey,
-      Authorization: `Bearer ${project.apiKey}`,
-    },
-  });
-
-  return { endpoint, response };
+function ts() {
+  return new Date().toISOString();
 }
 
-async function pingProject(project) {
-  for (const endpoint of PING_ENDPOINTS) {
-    try {
-      const { response } = await pingEndpoint(project, endpoint);
+function log(level, message) {
+  const line = `${ts()} ${message}`;
+  if (level === 'error') console.error(line);
+  else if (level === 'warn') console.warn(line);
+  else console.log(line);
+}
 
-      if (response.ok) {
-        console.log(`[${project.name}] Ping succeeded via ${endpoint.label}`);
-        return;
-      }
+function nextPingAt() {
+  return new Date(Date.now() + PING_INTERVAL_MS).toISOString();
+}
 
-      console.warn(
-        `[${project.name}] ${endpoint.label} returned HTTP ${response.status}`
-      );
-    } catch (error) {
-      console.warn(`[${project.name}] ${endpoint.label} failed:`, error.message);
-    }
+function logStartup() {
+  const names = projects.map((p) => p.name).join(', ');
+  log('info', 'keep-alive service starting');
+  log('info', `loaded ${projects.length} project(s): ${names}`);
+  log('info', `ping interval: every ${PING_INTERVAL_DAYS} days`);
+}
+
+async function runProjectPing(project) {
+  const tableResult = await pingTable(project);
+  if (tableResult.ok) {
+    log('info', `[${project.name}] ping succeeded via ${tableResult.detail}`);
+    return true;
   }
 
-  console.error(`[${project.name}] All ping methods failed`);
+  log('warn', `[${project.name}] ${tableResult.detail}`);
+
+  const authResult = await pingAuthAdmin(project);
+  if (authResult.ok) {
+    log('info', `[${project.name}] ping succeeded via ${authResult.detail}`);
+    return true;
+  }
+
+  if (project.serviceRoleKey) {
+    log('warn', `[${project.name}] ${authResult.detail}`);
+  }
+
+  log(
+    'error',
+    `[${project.name}] ping failed — run npm run setup to create _keepalive, or add a service role key`
+  );
+  return false;
 }
 
 async function pingAllProjects() {
-  await Promise.all(projects.map(pingProject));
+  log('info', 'ping cycle starting');
+
+  const results = await Promise.all(projects.map(runProjectPing));
+  const failed = results.filter((ok) => !ok).length;
+  const succeeded = projects.length - failed;
+
+  if (failed === 0) {
+    log('info', `ping cycle complete: ${succeeded}/${projects.length} succeeded`);
+  } else {
+    log('error', `ping cycle complete: ${succeeded}/${projects.length} succeeded, ${failed} failed`);
+    if (RUN_ONCE) {
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (!RUN_ONCE) {
+    log('info', `next ping at ${nextPingAt()}`);
+  }
 }
 
+process.on('unhandledRejection', (error) => {
+  log('error', `unhandled rejection: ${error.message}`);
+  process.exit(1);
+});
+
+logStartup();
 pingAllProjects();
-setInterval(pingAllProjects, PING_INTERVAL_MS);
+
+if (!RUN_ONCE) {
+  setInterval(pingAllProjects, PING_INTERVAL_MS);
+}

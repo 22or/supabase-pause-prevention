@@ -1,16 +1,18 @@
 {
-  "name": "timeline-free-supabase",
+  "name": "supabase-pause-prevention",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "main.js",
   "scripts": {
     "setup": "node setup.js",
     "start": "node main.js",
+    "ping": "node main.js --once",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "Keep free-tier Supabase projects active by pinging them on a schedule",
   "dependencies": {
-    "dotenv": "^17.2.0"
+    "dotenv": "^17.2.0",
+    "pg": "^8.16.3"
   }
 }
