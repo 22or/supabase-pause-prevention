@@ -1,6 +1,6 @@
 # Supabase Pause Prevention
 
-Keep free-tier Supabase projects active by pinging them on a schedule. Free projects pause after about 7 days without API activity; this service issues a lightweight database `SELECT` every few days so they stay awake.
+Keep free-tier Supabase projects active by pinging them on a schedule. Free projects pause after about 7 days without activity; this service updates a `_keepalive` row every few days.
 
 ## Quick start
 
@@ -13,13 +13,7 @@ npm install
 npm run setup
 ```
 
-The setup wizard will:
-
-1. Ask for your project URL and anon key (Dashboard → Project Settings → API)
-2. Optionally create a `_keepalive` table in each project (needs the database password once)
-3. Test connections and write a `.env` file
-
-Verify everything works:
+Verify:
 
 ```bash
 npm run ping
@@ -32,63 +26,25 @@ Run from the project directory so `.env` is found:
 ```bash
 pm2 start npm --name supabase-keepalive -- start
 pm2 save
-pm2 startup   # run the command it prints so the service survives reboot
-```
-
-Useful commands:
-
-```bash
-pm2 logs supabase-keepalive
-pm2 restart supabase-keepalive
-pm2 stop supabase-keepalive
+pm2 startup
 ```
 
 ## How it works
 
-On each ping cycle the service tries, per project:
+Each ping cycle, per project:
 
-1. `SELECT` from `public._keepalive` via the REST API (anon key)
-2. Auth admin API fallback, if a service role key is configured
+1. `PATCH` on `public._keepalive` (sets `pinged_at`) via REST with the anon key
+2. Auth admin fallback, if a service role key is configured
 
-The `_keepalive` table is a single-row table with RLS allowing anon read access. Setup can create it automatically, or you can run `sql/keepalive.sql` manually in the SQL Editor.
+Each ping **updates** `_keepalive.pinged_at` (a real DB write). Run `sql/keepalive.sql` once per project; re-run it if the table already exists from an older setup.
 
-Default ping interval is every **3 days**. Override with:
-
-```env
-PING_INTERVAL_DAYS=6
-```
+Default interval: **1 day**. Override with `PING_INTERVAL_DAYS=3` in `.env`. Optional `serviceRoleKey` bypasses missing anon UPDATE policy and enables auth admin fallback.
 
 ## Configuration
 
-Copy `.env.example` to `.env`, or let `npm run setup` generate it.
-
-**Single project:**
-
-```env
-NEXT_PUBLIC_SUPABASE_URL=https://your-ref.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
-# SUPABASE_PROJECT_NAME=my-app
-# SUPABASE_SERVICE_ROLE_KEY=optional-fallback
-# SUPABASE_TABLE=_keepalive
-# PING_INTERVAL_DAYS=3
-```
-
-**Multiple projects** (`SUPABASE_PROJECTS` takes precedence):
-
-```env
-SUPABASE_PROJECTS=[{"name":"app-one","url":"https://one.supabase.co","anonKey":"..."},{"name":"app-two","url":"https://two.supabase.co","anonKey":"...","serviceRoleKey":"..."}]
-```
-
-## Scripts
-
-| Command | Description |
-|---------|-------------|
-| `npm run setup` | Interactive wizard — configure projects and create tables |
-| `npm run ping` | Run one ping cycle and exit (useful for testing) |
-| `npm start` | Start the keep-alive daemon |
+See `.env.example`. Multiple projects use `SUPABASE_PROJECTS` JSON (takes precedence over single-project vars).
 
 ## Notes
 
-- Unpause any already-paused projects in the Supabase dashboard before setup or pings will fail.
-- If this VPS is down for 7+ days, projects can still pause.
-- The anon key is enough when `_keepalive` exists; the service role key is only a fallback.
+- Unpause paused projects in the dashboard before pinging.
+- If the VPS is down for 7+ days, projects can still pause.

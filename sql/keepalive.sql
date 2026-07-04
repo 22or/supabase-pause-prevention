@@ -1,5 +1,5 @@
 -- Run once per project in Supabase Dashboard -> SQL Editor
--- Creates a tiny table the keep-alive script can SELECT from with the anon key.
+-- Creates a tiny table the keep-alive script can UPDATE with the anon key.
 
 create table if not exists public._keepalive (
   id int primary key default 1,
@@ -18,3 +18,11 @@ create policy "keepalive anon select"
   for select
   to anon
   using (true);
+
+drop policy if exists "keepalive anon update" on public._keepalive;
+create policy "keepalive anon update"
+  on public._keepalive
+  for update
+  to anon
+  using (true)
+  with check (true);

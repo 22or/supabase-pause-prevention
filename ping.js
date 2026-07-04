@@ -78,10 +78,11 @@ function loadProjects() {
   );
 }
 
-function authHeaders(apiKey) {
+function authHeaders(apiKey, extra = {}) {
   return {
     apikey: apiKey,
     Authorization: `Bearer ${apiKey}`,
+    ...extra,
   };
 }
 
@@ -91,13 +92,37 @@ async function pingPath(project, path, apiKey = project.apiKey) {
   });
 }
 
-async function pingTable(project) {
+async function updateKeepalive(project, apiKey) {
+  const path = `/rest/v1/${encodeURIComponent(project.table)}?id=eq.1`;
+
   try {
-    const path = `/rest/v1/${encodeURIComponent(project.table)}?select=id&limit=1`;
-    const response = await pingPath(project, path);
+    const response = await fetch(`${project.url}${path}`, {
+      method: 'PATCH',
+      headers: authHeaders(apiKey, {
+        'Content-Type': 'application/json',
+        Prefer: 'return=representation',
+      }),
+      body: JSON.stringify({ pinged_at: new Date().toISOString() }),
+      signal: AbortSignal.timeout(15000),
+    });
 
     if (response.ok) {
-      return { ok: true, detail: `database select on "${project.table}"` };
+      let rows = [];
+      try {
+        rows = await response.json();
+      } catch {
+        rows = [];
+      }
+
+      if (Array.isArray(rows) && rows.length > 0) {
+        return { ok: true, detail: `database update on "${project.table}"` };
+      }
+
+      return {
+        ok: false,
+        missingPolicy: true,
+        detail: `table "${project.table}" missing anon UPDATE policy — re-run sql/keepalive.sql in the SQL Editor`,
+      };
     }
 
     if (response.status === 404) {
@@ -107,15 +132,31 @@ async function pingTable(project) {
       };
     }
 
-    return { ok: false, detail: `database select returned HTTP ${response.status}` };
+    return { ok: false, detail: `database update returned HTTP ${response.status}` };
   } catch (error) {
     return {
       ok: false,
+      networkError: true,
       detail: error.message.includes('fetch failed')
         ? 'project unreachable — it may already be paused'
-        : `database select failed: ${error.message}`,
+        : `database update failed: ${error.message}`,
     };
   }
+}
+
+async function pingTable(project) {
+  let result = await updateKeepalive(project, project.apiKey);
+
+  if (!result.ok && result.networkError) {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    result = await updateKeepalive(project, project.apiKey);
+  }
+
+  if (!result.ok && result.missingPolicy && project.serviceRoleKey) {
+    result = await updateKeepalive(project, project.serviceRoleKey);
+  }
+
+  return result;
 }
 
 async function pingAuthAdmin(project) {

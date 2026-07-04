@@ -2,7 +2,7 @@ require('dotenv').config({ quiet: true });
 
 const { loadProjects, pingTable, pingAuthAdmin } = require('./ping');
 
-const DEFAULT_PING_INTERVAL_DAYS = 3;
+const DEFAULT_PING_INTERVAL_DAYS = 1;
 const RUN_ONCE = process.argv.includes('--once');
 
 function parsePingIntervalDays() {
